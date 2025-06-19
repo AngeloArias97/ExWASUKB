@@ -1410,13 +1410,26 @@ pointer-events: none;
     var svg = svgContainer.append("g");
     svg.attr("transform", "translate(" + xTranslate + "," + yTranslate + ")");
 
+    // group that will be zoomed and panned
+    var zoomGroup = svg.append("g");
+
+    // initialize zoom behaviour
+    var zoom = d3.zoom()
+                 .scaleExtent([0.5, 5])
+                 .on("zoom", function() {
+                   zoomGroup.attr("transform", d3.event.transform);
+                 });
+
+    // attach zoom to the container svg
+    svgContainer.call(zoom);
+
     if (showTooltips) {
-       svg.call(chordTip)
-          .call(groupTip);
+       zoomGroup.call(chordTip)
+                .call(groupTip);
     }
 
     // create groups
-    var groups = svg.append("g").attr("class", "groups")
+    var groups = zoomGroup.append("g").attr("class", "groups")
                     .selectAll("path")
                     .data(chord.groups)
                     .enter().append("path").attr("id", function(d, i) {
@@ -1445,7 +1458,7 @@ pointer-events: none;
 
     if (showTicks) {
         // create ticks for groups
-        var ticks = svg.append("g").attr("class", "ticks")
+        var ticks = zoomGroup.append("g").attr("class", "ticks")
                        .selectAll("g")
                        .data(chord.groups)
                        .enter().append("g") //.attr("class", "ticks")
@@ -1480,7 +1493,7 @@ pointer-events: none;
     }
 
     // create chords
-    var chords = svg.append("g").attr("class", "chords")
+    var chords = zoomGroup.append("g").attr("class", "chords")
                     .selectAll("path")
                     .data(chord)
                     .enter().append("path").attr("id", function(d, i) {
@@ -1507,7 +1520,7 @@ pointer-events: none;
 
     // create group labels
     if (showGroupnames) {
-        var names = svg.append("g").attr("class", "names")
+        var names = zoomGroup.append("g").attr("class", "names")
                        .selectAll("g")
                        .data(chord.groups)
                        .enter().append("g").attr("class", "name")
@@ -1540,7 +1553,7 @@ pointer-events: none;
     }
 
     if (categoryNames) {
-        var categories = svg.append("g").attr("class", "categories")
+        var categories = zoomGroup.append("g").attr("class", "categories")
                             .selectAll("g")
                             .data(categoryNames)
                             .enter().append("g").attr("class", "category")
@@ -1599,7 +1612,7 @@ pointer-events: none;
     // returns an event handler for fading all chords not belonging to a
     // specific group
     function groupFade(g, opacity) {
-        svg.selectAll(".chords path")
+        zoomGroup.selectAll(".chords path")
             .filter(function(d) { return d.source.index != g.index
                                       && d.target.index != g.index; })
             .transition()
@@ -1609,7 +1622,7 @@ pointer-events: none;
     // returns an event handler for fading all chords except for the one
     // given
     function chordFade(g, opacity) {
-        svg.selectAll(".chords path")
+        zoomGroup.selectAll(".chords path")
             .filter(function(d) { return d.source.index != g.source.index
                                       || d.target.index != g.target.index;
             })

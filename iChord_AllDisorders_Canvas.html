@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Chord Canvas</title>
+  <script src="https://d3js.org/d3.v6.min.js"></script>
+  <script src="chord_data.js"></script>
+  <style>
+    body { margin: 0; position: relative; }
+    canvas { display: block; margin: auto; background:white; }
+    #tooltip {
+      position: absolute;
+      line-height: 1;
+      padding: 12px;
+      background: rgba(0,0,0,0.7);
+      color: #fff;
+      border-radius: 2px;
+      pointer-events: none;
+      display: none;
+    }
+    #zoom-controls { text-align: center; margin-bottom: 5px; }
+    #zoom-controls button { margin: 0 2px; }
+  </style>
+</head>
+<body>
+  <div id="zoom-controls">
+    <button id="zoom-in">+ Zoom</button>
+    <button id="zoom-out">- Zoom</button>
+  </div>
+  <canvas id="chordCanvas" width="960" height="500"></canvas>
+  <div id="tooltip"></div>
+  <script>
+  (function(){
+    var data = chordData.x;
+    var matrix = data.matrix;
+    var options = data.options;
+    var width = 960,
+        height = 500,
+        margin = options.margin,
+        outerRadius = Math.min(width, height) / 2 - margin,
+        innerRadius = outerRadius * (1 - options.groupThickness);
+
+    var canvas = document.getElementById('chordCanvas');
+    var tooltip = document.getElementById('tooltip');
+    var context = canvas.getContext('2d');
+
+    var chordLayout = d3.chord()
+        .padAngle(options.groupPadding)
+        .sortSubgroups(d3.descending)(matrix);
+
+    var color = d3.scaleOrdinal()
+        .domain(d3.range(matrix.length))
+        .range(options.groupColors);
+
+    var arcGen = d3.arc()
+        .innerRadius(innerRadius)
+        .outerRadius(outerRadius)
+        .context(null);
+
+    var ribbonGen = d3.ribbon()
+        .radius(innerRadius)
+        .context(null);
+
+    var groups = chordLayout.groups.map(function(g){
+      return { data: g, path: new Path2D(arcGen(g)), color: color(g.index) };
+    });
+
+    var chords = chordLayout.map(function(d){
+      return { data: d, path: new Path2D(ribbonGen(d)), color: color(d.target.index) };
+    });
+
+    var transform = d3.zoomIdentity;
+    var selectedGroup = null;
+    var selectedChord = null;
+    var hoveredGroup = null;
+    var hoveredChord = null;
+
+    var zoom = d3.zoom()
+        .scaleExtent([0.5,5])
+        .on('zoom', function(event){
+          transform = event.transform;
+          draw();
+        });
+
+    d3.select(canvas).call(zoom).on('dblclick.zoom', null);
+
+    d3.select('#zoom-in').on('click', function(){
+      zoom.scaleBy(d3.select(canvas).transition().duration(750),1.2);
+    });
+
+    d3.select('#zoom-out').on('click', function(){
+      zoom.scaleBy(d3.select(canvas).transition().duration(750),0.8);
+    });
+
+    canvas.addEventListener('mousemove', onMove);
+    canvas.addEventListener('mouseout', function(){
+      hoveredGroup = null; hoveredChord = null; tooltip.style.display = 'none'; draw();
+    });
+    canvas.addEventListener('click', onClick);
+
+    function getPointer(event){
+      var p = d3.pointer(event, canvas);
+      var x = (p[0] - width/2 - transform.x) / transform.k;
+      var y = (p[1] - height/2 - transform.y) / transform.k;
+      return [x, y];
+    }
+
+    function onMove(event){
+      var pos = getPointer(event);
+      hoveredChord = null;
+      hoveredGroup = null;
+      for(var i=0;i<chords.length;i++){
+        if(context.isPointInPath(chords[i].path, pos[0], pos[1])){
+          hoveredChord = chords[i];
+          break;
+        }
+      }
+      if(!hoveredChord){
+        for(var i=0;i<groups.length;i++){
+          if(context.isPointInPath(groups[i].path, pos[0], pos[1])){
+            hoveredGroup = groups[i].data.index;
+            break;
+          }
+        }
+      }
+
+      if(hoveredChord){
+        tooltip.innerHTML = chordTooltip(hoveredChord.data);
+        tooltip.style.display = 'block';
+        tooltip.style.left = (event.clientX + 10) + 'px';
+        tooltip.style.top = (event.clientY + 10) + 'px';
+      } else if(hoveredGroup !== null){
+        tooltip.innerHTML = groupTooltip(groups[hoveredGroup].data);
+        tooltip.style.display = 'block';
+        tooltip.style.left = (event.clientX + 10) + 'px';
+        tooltip.style.top = (event.clientY + 10) + 'px';
+      } else {
+        tooltip.style.display = 'none';
+      }
+      draw();
+    }
+
+    function onClick(event){
+      var pos = getPointer(event);
+      var clicked = false;
+      for(var i=0;i<chords.length;i++){
+        if(context.isPointInPath(chords[i].path, pos[0], pos[1])){
+          var id = chords[i].data.source.index + '-' + chords[i].data.target.index;
+          if(selectedChord === id) selectedChord = null;
+          else if(selectedChord === null) selectedChord = id;
+          clicked = true;
+          break;
+        }
+      }
+      if(!clicked){
+        for(var i=0;i<groups.length;i++){
+          if(context.isPointInPath(groups[i].path, pos[0], pos[1])){
+            if(selectedGroup === groups[i].data.index) selectedGroup = null;
+            else if(selectedGroup === null) selectedGroup = groups[i].data.index;
+            clicked = true;
+            break;
+          }
+        }
+      }
+      if(clicked) draw();
+    }
+
+    function sigFigs(n, sig){
+      if(n == 0) return n;
+      if(sig == null) sig = 7;
+      var mult = Math.pow(10, sig - Math.floor(Math.log(n) / Math.LN10) - 1);
+      return Math.round(n * mult) / mult;
+    }
+
+    function groupTooltip(d){
+      return options.tooltipNames[d.index];
+    }
+
+    function chordTooltip(d){
+      var i = d.source.index, j = d.target.index;
+      var vij = sigFigs(matrix[i][j], options.precision);
+      var vji = sigFigs(matrix[j][i], options.precision);
+      var dir1 = options.tooltipNames[i] + options.tooltipGroupConnector +
+                 options.tooltipNames[j] + ': ' + vij + options.tooltipUnit;
+      var dir2 = options.tooltipNames[j] + options.tooltipGroupConnector +
+                 options.tooltipNames[i] + ': ' + vji + options.tooltipUnit;
+      if(options.type === 'directional'){
+        if(i === j){
+          return dir1;
+        } else {
+          if(options.showZeroTooltips){
+            return dir1 + '<br>' + dir2;
+          } else {
+            return dir1 + (vji > 0 ? '<br>' + dir2 : '');
+          }
+        }
+      } else if(options.type === 'bipartite'){
+        return dir2;
+      }
+      return '';
+    }
+
+    function draw(){
+      context.save();
+      context.clearRect(0,0,width,height);
+      context.translate(width/2 + transform.x, height/2 + transform.y);
+      context.scale(transform.k, transform.k);
+
+      groups.forEach(function(g){
+        var fade = false;
+        if(hoveredGroup !== null && selectedGroup === null && selectedChord === null && g.data.index !== hoveredGroup){
+          fade = true;
+        }
+        context.beginPath();
+        context.fillStyle = (selectedGroup === g.data.index ? 'red' : g.color);
+        context.strokeStyle = options.groupedgeColor || g.color;
+        context.globalAlpha = fade ? options.fadeLevel : 1;
+        context.fill(g.path);
+        context.stroke(g.path);
+        context.globalAlpha = 1;
+      });
+
+      chords.forEach(function(c){
+        var fade = false;
+        if(hoveredChord){
+          if(hoveredChord !== c && selectedGroup === null && selectedChord === null){
+            fade = true;
+          }
+        } else if(hoveredGroup !== null && selectedGroup === null && selectedChord === null){
+          if(c.data.source.index !== hoveredGroup && c.data.target.index !== hoveredGroup){
+            fade = true;
+          }
+        }
+        var id = c.data.source.index + '-' + c.data.target.index;
+        context.beginPath();
+        context.fillStyle = (selectedChord === id ? 'red' : c.color);
+        context.strokeStyle = options.chordedgeColor;
+        context.globalAlpha = fade ? options.fadeLevel : 1;
+        context.fill(c.path);
+        context.stroke(c.path);
+        context.globalAlpha = 1;
+      });
+
+      context.restore();
+    }
+
+    draw();
+  })();
+  </script>
+</body>
+</html>

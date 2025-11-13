@@ -6,8 +6,58 @@
   <script src="https://d3js.org/d3.v6.min.js"></script>
   <script src="chord_data.js"></script>
   <style>
-    body { margin: 0; position: relative; }
-    canvas { display: block; margin: auto; background:white; }
+    body { margin: 0; position: relative; font-family: sans-serif; }
+
+    #zoom-controls { text-align: left; margin: 8px 0; }
+    #zoom-controls button { margin: 0 2px; }
+
+    #layout {
+      display: flex;
+      align-items: flex-start;
+    }
+
+    canvas { display: block; background:white; }
+
+    #legend {
+      width: 260px;
+      padding: 10px 20px 10px 10px;
+      box-sizing: border-box;
+    }
+
+    #legend-title, #domain-legend-title {
+      margin: 0 0 8px 0;
+      font-size: 16px;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    #legend-items.collapsed,
+    #domain-legend-items.collapsed {
+      display: none;
+    }
+
+    .legend-item {
+      display: flex;
+      align-items: center;
+      margin-bottom: 4px;
+      cursor: pointer;
+      user-select: none;
+      font-size: 14px;
+    }
+
+    .legend-swatch {
+      width: 14px;
+      height: 14px;
+      margin-right: 6px;
+      border-radius: 2px;
+      border: 1px solid rgba(0,0,0,0.2);
+    }
+
+    .legend-item.active .legend-swatch {
+      outline: 2px solid #000;
+      outline-offset: 1px;
+    }
+
     #tooltip {
       position: absolute;
       line-height: 1;
@@ -17,32 +67,53 @@
       border-radius: 2px;
       pointer-events: none;
       display: none;
+      font-size: 13px;
     }
-    #zoom-controls { text-align: center; margin-bottom: 5px; }
-    #zoom-controls button { margin: 0 2px; }
   </style>
 </head>
 <body>
   <div id="zoom-controls">
     <button id="zoom-in">+ Zoom</button>
     <button id="zoom-out">- Zoom</button>
+    <button id="zoom-reset">Reset</button>
   </div>
-  <canvas id="chordCanvas" width="960" height="500"></canvas>
+
+  <div id="layout">
+    <canvas id="chordCanvas"></canvas>
+    <div id="legend">
+      <h3 id="legend-title">Groups of exposures ▾</h3>
+      <div id="legend-items"></div>
+
+      <h3 id="domain-legend-title" style="margin-top:16px;">Diagnostic domains ▾</h3>
+      <div id="domain-legend-items"></div>
+    </div>
+  </div>
+
   <div id="tooltip"></div>
+
   <script>
   (function(){
     var data = chordData.x;
     var matrix = data.matrix;
     var options = data.options;
-    var width = 960,
-        height = 500,
-        margin = options.margin,
-        outerRadius = Math.min(width, height) / 2 - margin,
-        innerRadius = outerRadius * (1 - options.groupThickness);
 
     var canvas = document.getElementById('chordCanvas');
+    var legendTitle = document.getElementById('legend-title');
+    var legendItemsContainer = document.getElementById('legend-items');
+    var domainLegendTitle = document.getElementById('domain-legend-title');
+    var domainLegendItemsContainer = document.getElementById('domain-legend-items');
     var tooltip = document.getElementById('tooltip');
     var context = canvas.getContext('2d');
+
+    var legendWidth = 260;
+    var width = window.innerWidth - legendWidth;
+    var height = window.innerHeight - 80;
+    canvas.width = width;
+    canvas.height = height;
+
+    var margin = options.margin * 0.3;
+    var outerRadius = Math.min(width, height) / 2 - margin;
+    var innerRadius = outerRadius * (1 - options.groupThickness);
 
     var chordLayout = d3.chord()
         .padAngle(options.groupPadding)
@@ -69,27 +140,203 @@
       return { data: d, path: new Path2D(ribbonGen(d)), color: color(d.target.index) };
     });
 
-    var transform = d3.zoomIdentity;
+    var transform = { x: 0, y: 0, k: 1 };
     var selectedGroup = null;
     var selectedChord = null;
+    var selectedExposureColor = null;
+    var selectedDomain = null;
     var hoveredGroup = null;
     var hoveredChord = null;
 
-    var zoom = d3.zoom()
-        .scaleExtent([0.5,5])
-        .on('zoom', function(event){
-          transform = event.transform;
-          draw();
-        });
+    var isDragging = false;
+    var lastMousePos = null;
+    var legendCollapsed = false;
+    var domainLegendCollapsed = false;
 
-    d3.select(canvas).call(zoom).on('dblclick.zoom', null);
+    var exposureLegendItems = [
+      { label: 'Traumatic events',          color: '#FF67A4' },
+      { label: 'Substance use',            color: '#FD61D1' },
+      { label: 'Sociodemographics',        color: '#E76BF3' },
+      { label: 'Psychosocial factors',     color: '#B983FF' },
+      { label: 'Physical measures',        color: '#00B0F6' },
+      { label: 'Operations',               color: '#00BCD8' },
+      { label: 'Local environment',        color: '#00BF7D' },
+      { label: 'Lifestyle and environment',color: '#00BA38' },
+      { label: 'Health and medical history',color:'#6BB100' },
+      { label: 'Early life factors',       color: '#A3A500' },
+      { label: 'Digestive health',         color: '#C99800' },
+      { label: 'Diet by 24-hour recall',   color: '#E58700' },
+      { label: 'Biological samples',       color: '#F8766D' }
+    ];
+
+    var diagnosticLegendItems = [
+      { key: 'anxiety',   label: 'Anxiety disorders', groupIndices: [0] },
+      { key: 'depressive', label: 'Depressive disorders',      groupIndices: [1] },
+      { key: 'eating', label: 'Eating disorders',        groupIndices: [2] },
+      { key: 'bipolar', label: 'Bipolar manic disorders',    groupIndices: [3] },
+      { key: 'psychotic', label: 'Psychotic disorders',              groupIndices: [4] },
+      { key: 'personality', label: 'Personality disorders',            groupIndices: [5] },
+      { key: 'neurodevelopmental', label: 'Neurodevelopmental disorders',            groupIndices: [6] }
+    ];
+
+    exposureLegendItems.forEach(function(item){
+      var row = document.createElement('div');
+      row.className = 'legend-item';
+      var swatch = document.createElement('span');
+      swatch.className = 'legend-swatch';
+      swatch.style.backgroundColor = item.color;
+      var label = document.createElement('span');
+      label.textContent = item.label;
+      row.appendChild(swatch);
+      row.appendChild(label);
+      row.addEventListener('click', function(){
+        if (selectedExposureColor === item.color) {
+          selectedExposureColor = null;
+        } else {
+          selectedExposureColor = item.color;
+          selectedGroup = null;
+          selectedChord = null;
+        }
+        hoveredGroup = null;
+        hoveredChord = null;
+        tooltip.style.display = 'none';
+        updateExposureLegendActive();
+        draw();
+      });
+      legendItemsContainer.appendChild(row);
+      item._element = row;
+    });
+
+    diagnosticLegendItems.forEach(function(item){
+      var row = document.createElement('div');
+      row.className = 'legend-item';
+      var swatch = document.createElement('span');
+      swatch.className = 'legend-swatch';
+      swatch.style.backgroundColor = '#CCCCCC';
+      var label = document.createElement('span');
+      label.textContent = item.label;
+      row.appendChild(swatch);
+      row.appendChild(label);
+      row.addEventListener('click', function(){
+        if (selectedDomain && selectedDomain.key === item.key) {
+          selectedDomain = null;
+        } else {
+          selectedDomain = item;
+          selectedGroup = null;
+          selectedChord = null;
+        }
+        hoveredGroup = null;
+        hoveredChord = null;
+        tooltip.style.display = 'none';
+        updateDomainLegendActive();
+        draw();
+      });
+      domainLegendItemsContainer.appendChild(row);
+      item._element = row;
+    });
+
+    function updateExposureLegendActive(){
+      exposureLegendItems.forEach(function(item){
+        if (item._element) {
+          if (item.color === selectedExposureColor) {
+            item._element.classList.add('active');
+          } else {
+            item._element.classList.remove('active');
+          }
+        }
+      });
+    }
+
+    function updateDomainLegendActive(){
+      diagnosticLegendItems.forEach(function(item){
+        if (item._element) {
+          if (selectedDomain && item.key === selectedDomain.key) {
+            item._element.classList.add('active');
+          } else {
+            item._element.classList.remove('active');
+          }
+        }
+      });
+    }
+
+    function updateLegendCollapsed(){
+      if (legendCollapsed) {
+        legendItemsContainer.classList.add('collapsed');
+        legendTitle.textContent = 'Groups of exposures ▸';
+      } else {
+        legendItemsContainer.classList.remove('collapsed');
+        legendTitle.textContent = 'Groups of exposures ▾';
+      }
+    }
+
+    function updateDomainLegendCollapsed(){
+      if (domainLegendCollapsed) {
+        domainLegendItemsContainer.classList.add('collapsed');
+        domainLegendTitle.textContent = 'Diagnostic domains ▸';
+      } else {
+        domainLegendItemsContainer.classList.remove('collapsed');
+        domainLegendTitle.textContent = 'Diagnostic domains ▾';
+      }
+    }
+
+    legendTitle.addEventListener('click', function(){
+      legendCollapsed = !legendCollapsed;
+      updateLegendCollapsed();
+    });
+    domainLegendTitle.addEventListener('click', function(){
+      domainLegendCollapsed = !domainLegendCollapsed;
+      updateDomainLegendCollapsed();
+    });
+    updateLegendCollapsed();
+    updateDomainLegendCollapsed();
 
     d3.select('#zoom-in').on('click', function(){
-      zoom.scaleBy(d3.select(canvas).transition().duration(750),1.2);
+      transform.k *= 1.2;
+      draw();
     });
 
     d3.select('#zoom-out').on('click', function(){
-      zoom.scaleBy(d3.select(canvas).transition().duration(750),0.8);
+      transform.k /= 1.2;
+      draw();
+    });
+
+    d3.select('#zoom-reset').on('click', function(){
+      transform = { x: 0, y: 0, k: 1 };
+      selectedGroup = null;
+      selectedChord = null;
+      selectedExposureColor = null;
+      selectedDomain = null;
+      hoveredGroup = null;
+      hoveredChord = null;
+      tooltip.style.display = 'none';
+      updateExposureLegendActive();
+      updateDomainLegendActive();
+      draw();
+    });
+
+    canvas.addEventListener('dblclick', function(){
+      transform = { x: 0, y: 0, k: 1 };
+      selectedGroup = null;
+      selectedChord = null;
+      selectedExposureColor = null;
+      selectedDomain = null;
+      hoveredGroup = null;
+      hoveredChord = null;
+      tooltip.style.display = 'none';
+      updateExposureLegendActive();
+      updateDomainLegendActive();
+      draw();
+    });
+
+    canvas.addEventListener('mousedown', function(event){
+      isDragging = true;
+      lastMousePos = { x: event.clientX, y: event.clientY };
+      tooltip.style.display = 'none';
+    });
+
+    window.addEventListener('mouseup', function(){
+      isDragging = false;
+      lastMousePos = null;
     });
 
     canvas.addEventListener('mousemove', onMove);
@@ -105,21 +352,109 @@
       return [x, y];
     }
 
+    function selectedDomainIndices(){
+      if (!selectedDomain) return null;
+      return selectedDomain.groupIndices || [];
+    }
+
+    function chordMatchesExposure(c){
+      if (!selectedExposureColor) return true;
+      return c.color === selectedExposureColor;
+    }
+
+    function chordMatchesDomain(c){
+      var inds = selectedDomainIndices();
+      if (!inds) return true;
+      return inds.indexOf(c.data.source.index) !== -1 || inds.indexOf(c.data.target.index) !== -1;
+    }
+
+    function groupMatchesExposure(g){
+      if (!selectedExposureColor) return true;
+      return g.color === selectedExposureColor;
+    }
+
+    function groupMatchesDomain(g){
+      var inds = selectedDomainIndices();
+      if (!inds) return true;
+      return inds.indexOf(g.data.index) !== -1;
+    }
+
+    function shouldFadeChord(c, id){
+      if (selectedChord !== null) {
+        return id !== selectedChord;
+      }
+      if (selectedGroup !== null) {
+        return c.data.source.index !== selectedGroup && c.data.target.index !== selectedGroup;
+      }
+      if (selectedExposureColor || selectedDomain) {
+        if (!chordMatchesExposure(c)) return true;
+        if (!chordMatchesDomain(c)) return true;
+      }
+      if (hoveredChord) {
+        return hoveredChord !== c;
+      }
+      if (hoveredGroup !== null) {
+        return c.data.source.index !== hoveredGroup && c.data.target.index !== hoveredGroup;
+      }
+      return false;
+    }
+
+    function shouldFadeGroup(g){
+      if (selectedGroup !== null) {
+        return g.data.index !== selectedGroup;
+      }
+      if (selectedChord !== null) {
+        var parts = selectedChord.split('-');
+        var i0 = +parts[0], i1 = +parts[1];
+        return g.data.index !== i0 && g.data.index !== i1;
+      }
+      if (selectedExposureColor || selectedDomain) {
+        var matchExp = groupMatchesExposure(g);
+        var matchDom = groupMatchesDomain(g);
+        if (!matchExp && !matchDom) return true;
+      }
+      if (hoveredGroup !== null) {
+        return g.data.index !== hoveredGroup;
+      }
+      return false;
+    }
+
     function onMove(event){
+      if (isDragging && lastMousePos) {
+        var dx = event.clientX - lastMousePos.x;
+        var dy = event.clientY - lastMousePos.y;
+        transform.x += dx;
+        transform.y += dy;
+        lastMousePos = { x: event.clientX, y: event.clientY };
+        draw();
+        return;
+      }
+
       var pos = getPointer(event);
+
       hoveredChord = null;
       hoveredGroup = null;
+
       for(var i=0;i<chords.length;i++){
         if(context.isPointInPath(chords[i].path, pos[0], pos[1])){
           hoveredChord = chords[i];
           break;
         }
       }
+      if (hoveredChord) {
+        var hid = hoveredChord.data.source.index + '-' + hoveredChord.data.target.index;
+        if (shouldFadeChord(hoveredChord, hid)) {
+          hoveredChord = null;
+        }
+      }
       if(!hoveredChord){
-        for(var i=0;i<groups.length;i++){
-          if(context.isPointInPath(groups[i].path, pos[0], pos[1])){
-            hoveredGroup = groups[i].data.index;
-            break;
+        for(var gIdx=0;gIdx<groups.length;gIdx++){
+          if(context.isPointInPath(groups[gIdx].path, pos[0], pos[1])){
+            hoveredGroup = groups[gIdx].data.index;
+            if (shouldFadeGroup(groups[gIdx])) {
+              hoveredGroup = null;
+            }
+            if (hoveredGroup !== null) break;
           }
         }
       }
@@ -143,26 +478,55 @@
     function onClick(event){
       var pos = getPointer(event);
       var clicked = false;
+
       for(var i=0;i<chords.length;i++){
         if(context.isPointInPath(chords[i].path, pos[0], pos[1])){
           var id = chords[i].data.source.index + '-' + chords[i].data.target.index;
-          if(selectedChord === id) selectedChord = null;
-          else if(selectedChord === null) selectedChord = id;
+          if(shouldFadeChord(chords[i], id)){
+            continue;
+          }
+          if(selectedChord === id){
+            selectedChord = null;
+          } else {
+            selectedChord = id;
+            selectedGroup = null;
+            selectedExposureColor = null;
+            selectedDomain = null;
+            updateExposureLegendActive();
+            updateDomainLegendActive();
+          }
           clicked = true;
           break;
         }
       }
+
       if(!clicked){
-        for(var i=0;i<groups.length;i++){
-          if(context.isPointInPath(groups[i].path, pos[0], pos[1])){
-            if(selectedGroup === groups[i].data.index) selectedGroup = null;
-            else if(selectedGroup === null) selectedGroup = groups[i].data.index;
+        for(var j=0;j<groups.length;j++){
+          if(context.isPointInPath(groups[j].path, pos[0], pos[1])){
+            if(shouldFadeGroup(groups[j])) continue;
+            if(selectedGroup === groups[j].data.index){
+              selectedGroup = null;
+            } else {
+              selectedGroup = groups[j].data.index;
+              selectedChord = null;
+              selectedExposureColor = null;
+              selectedDomain = null;
+              updateExposureLegendActive();
+              updateDomainLegendActive();
+            }
             clicked = true;
             break;
           }
         }
       }
-      if(clicked) draw();
+
+      if(!clicked){
+        selectedGroup = null;
+        selectedChord = null;
+        tooltip.style.display = 'none';
+      }
+
+      draw();
     }
 
     function sigFigs(n, sig){
@@ -202,17 +566,14 @@
 
     function draw(){
       context.save();
-      context.clearRect(0,0,width,height);
+      context.clearRect(0, 0, width, height);
       context.translate(width/2 + transform.x, height/2 + transform.y);
       context.scale(transform.k, transform.k);
 
       groups.forEach(function(g){
-        var fade = false;
-        if(hoveredGroup !== null && selectedGroup === null && selectedChord === null && g.data.index !== hoveredGroup){
-          fade = true;
-        }
+        var fade = shouldFadeGroup(g);
         context.beginPath();
-        context.fillStyle = (selectedGroup === g.data.index ? 'red' : g.color);
+        context.fillStyle = g.color;
         context.strokeStyle = options.groupedgeColor || g.color;
         context.globalAlpha = fade ? options.fadeLevel : 1;
         context.fill(g.path);
@@ -221,23 +582,13 @@
       });
 
       chords.forEach(function(c){
-        var fade = false;
-        if(hoveredChord){
-          if(hoveredChord !== c && selectedGroup === null && selectedChord === null){
-            fade = true;
-          }
-        } else if(hoveredGroup !== null && selectedGroup === null && selectedChord === null){
-          if(c.data.source.index !== hoveredGroup && c.data.target.index !== hoveredGroup){
-            fade = true;
-          }
-        }
         var id = c.data.source.index + '-' + c.data.target.index;
+        var fade = shouldFadeChord(c, id);
         context.beginPath();
-        context.fillStyle = (selectedChord === id ? 'red' : c.color);
-        context.strokeStyle = options.chordedgeColor;
-        context.globalAlpha = fade ? options.fadeLevel : 1;
+        context.fillStyle = c.color;
+        var baseOpacity = options.chordOpacity || 0.75;
+        context.globalAlpha = fade ? options.fadeLevel : baseOpacity;
         context.fill(c.path);
-        context.stroke(c.path);
         context.globalAlpha = 1;
       });
 
